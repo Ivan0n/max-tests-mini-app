@@ -47,6 +47,7 @@ cd max-tests-mini-app
 ### 3. Запусти compose
 
 ```sh
+docker compose pull
 docker compose up -d --wait
 ```
 
