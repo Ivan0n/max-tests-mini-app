@@ -34,7 +34,7 @@ docker compose version
 
 Обе команды должны вывести номер версии. Нужен Docker Compose v2 или новее.
 
-### 2. Скачай бэкенд
+### 2. Скачай compose
 
 ```sh
 git clone https://github.com/Ivan0n/max-tests-mini-app
@@ -44,7 +44,7 @@ cd max-tests-mini-app
 Если проект уже есть, открой **его папку** в VS Code (**Terminal → New Terminal**)
 и обнови его: `git pull`. Все команды ниже выполняй в папке бэкенда.
 
-### 3. Запусти бэкенд
+### 3. Запусти compose
 
 ```sh
 docker compose up -d --wait
