@@ -5,8 +5,20 @@ x-backend-env: &backend-env
   DB_PORT: "5432"
   DB_NAME: ${DB_NAME:-max_tests}
   DB_LOGIN: ${DB_LOGIN:-max_tests}
-  DB_PASS: ${DB_PASS:?Set DB_PASS in .env}
+  # DB and S3 are reachable only inside the Compose network (no published ports), so these defaults
+  # make the project start with just MAX_BOT_TOKEN in .env. On a server set your own random values
+  # BEFORE the first start (the database and the storage remember them).
+  DB_PASS: ${DB_PASS:-change-me-db-password}
+  # MAX bot: only the token is needed, the rest is optional (see docs/docker-env.md).
   MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
+  MAX_BOT_USERNAME: ${MAX_BOT_USERNAME:-}
+  MAX_BOT_ID: ${MAX_BOT_ID:-}
+  MAX_API_URL: ${MAX_API_URL:-}
+  # false: the text bot does not run (the container idles). The site and the API work either way.
+  BOT_ENABLED: ${BOT_ENABLED:-true}
+  # DEV_MODE=true: no MAX sign-in check, everyone is the shared "Разработчик" account. ONLY for a
+  # project on your own computer, together with WEB_DEV_LOGIN=true. Never on a server.
+  DEV_MODE: ${DEV_MODE:-}
   MAX_INIT_DATA_MAX_AGE: ${MAX_INIT_DATA_MAX_AGE:-3600}
   AUTH_SESSION_TTL: ${AUTH_SESSION_TTL:-86400}
   BETA_USER_IDS: ${BETA_USER_IDS:-}
@@ -15,11 +27,14 @@ x-backend-env: &backend-env
   # Task images in the s3 service below. IMAGE_SIGNING_KEY signs the image links handed to browsers.
   S3_ENDPOINT: http://s3:8333
   S3_BUCKET: ${S3_BUCKET:-test-images}
-  S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in .env}
-  S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env}
-  IMAGE_SIGNING_KEY: ${IMAGE_SIGNING_KEY:?Set IMAGE_SIGNING_KEY in .env}
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:-change-me-s3-access}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:-change-me-s3-secret}
+  # Empty: the backend derives the key from MAX_BOT_TOKEN (see storage.py), so links stay valid across restarts.
+  IMAGE_SIGNING_KEY: ${IMAGE_SIGNING_KEY:-}
 
 x-backend: &backend
+  # Pulled from Docker Hub, so this file and .env are enough to run the project.
+  # Developers: `docker compose up -d --build` builds it from this folder instead.
   image: ${BACKEND_IMAGE:-ivan0n/max-test-mini-app-backend:latest}
   build:
     context: .
@@ -31,7 +46,7 @@ services:
     environment:
       POSTGRES_DB: ${DB_NAME:-max_tests}
       POSTGRES_USER: ${DB_LOGIN:-max_tests}
-      POSTGRES_PASSWORD: ${DB_PASS:?Set DB_PASS in .env}
+      POSTGRES_PASSWORD: ${DB_PASS:-change-me-db-password}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -54,8 +69,8 @@ services:
         printf '{"identities":[{"name":"backend","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","List","Tagging","Write"]}]}' "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" > /tmp/s3.json
         exec weed server -dir=/data -s3 -s3.port=8333 -s3.config=/tmp/s3.json -master.volumeSizeLimitMB=1024 -volume.max=0
     environment:
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in .env}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-change-me-s3-access}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-change-me-s3-secret}
     volumes:
       - s3_data:/data
     healthcheck:
@@ -79,7 +94,7 @@ services:
   app:
     <<: *backend
     ports:
-      - "${APP_PORT:-8000}:8000"
+      - "${APP_PORT:-127.0.0.1:8000}:8000"
     depends_on:
       db:
         condition: service_healthy
@@ -93,9 +108,25 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # Frontend behind nginx, the way production serves it: the built SPA, /api/ and /test/ proxied
+  # to "app". The image comes from Docker Hub (nothing to build); update it with `docker compose pull web`.
+  # Starts together with everything else: http://127.0.0.1:8080. WEB_PORT changes the address; on the
+  # production server (host nginx with TLS in front) the same service can listen on a private port.
+  web:
+    image: ${WEB_IMAGE:-ivan0n/max-test-mini-app-web:latest}
+    environment:
+      # true: a plain browser signs in without MAX (needs DEV_MODE=true for the backend).
+      WEB_DEV_LOGIN: ${WEB_DEV_LOGIN:-false}
+    ports:
+      - "${WEB_PORT:-127.0.0.1:8080}:80"
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Text bot. Turn it off with BOT_ENABLED=false in .env; without MAX_BOT_TOKEN it idles by itself.
   bot:
     <<: *backend
-    profiles: ["bot"]
     command: ["python", "max_bot.py"]
     environment:
       <<: *backend-env

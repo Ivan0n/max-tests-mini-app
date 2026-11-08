@@ -17,6 +17,48 @@ from dotenv import load_dotenv
 
 API_URL = "https://platform-api2.max.ru"
 MESSAGES_PATH = Path(__file__).parent / "messages.json"
+BOT_USERNAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+
+def _clean(value):
+    """A value as typed in .env: without quotes, spaces and an inline " # comment"."""
+    value = (value or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1]
+    return re.split(r"\s+#", value, maxsplit=1)[0].strip()
+
+
+def env_flag(name, default=True, env=None):
+    """true/false switch from the environment: 1/true/yes/on and 0/false/no/off (any case)."""
+    value = _clean((os.environ if env is None else env).get(name)).lower()
+    if not value:
+        return default
+    return value not in ("0", "false", "no", "off", "n")
+
+
+def bot_settings(env=None):
+    """Optional bot settings from the environment (the backend .env through Compose).
+
+    MAX_API_URL       MAX Bot API address, default https://platform-api2.max.ru
+    MAX_BOT_ID        bot user_id for "open_app" buttons; with MAX_BOT_USERNAME, GET /me is skipped
+    MAX_BOT_USERNAME  bot username for links https://max.ru/<username>?startapp=...; default from GET /me
+    Raises ValueError for a malformed value, so a typo stops the start instead of breaking links.
+    """
+    env = os.environ if env is None else env
+    api_url = _clean(env.get("MAX_API_URL")).rstrip("/")
+    if api_url and "://" not in api_url:
+        api_url = "https://" + api_url  # a bare host name is taken as https
+    api_url = api_url or API_URL
+    if not re.fullmatch(r"https?://[^\s/?#]+(?:/[^\s?#]*)?", api_url):
+        raise ValueError(f"MAX_API_URL must be an http(s) address, for example https://platform-api2.max.ru "
+                         f"(got {api_url[:80]!r})")
+    bot_id = _clean(env.get("MAX_BOT_ID"))
+    if bot_id and (not bot_id.isdigit() or int(bot_id) <= 0):
+        raise ValueError(f"MAX_BOT_ID must be a positive number, the bot's user_id (got {bot_id[:40]!r})")
+    username = _clean(env.get("MAX_BOT_USERNAME")).lstrip("@")
+    if username and not BOT_USERNAME_RE.fullmatch(username):
+        raise ValueError(f"MAX_BOT_USERNAME may contain only Latin letters, digits, _ . and - (got {username[:40]!r})")
+    return {"api_url": api_url, "bot_id": int(bot_id) if bot_id else None, "username": username or None}
 # MAX allows at most 3 buttons in a row that contains an open_app button.
 OPEN_APP_ROW_LIMIT = 3
 # Start parameter rules from https://dev.max.ru/docs/webapps/introduction
@@ -180,19 +222,38 @@ class MaxAPIError(RuntimeError):
 
 
 class MaxClient:
-    def __init__(self, token, messages_path=MESSAGES_PATH):
+    def __init__(self, token, messages_path=MESSAGES_PATH, *, api_url=API_URL, bot_id=None, username=None):
         if not token.strip():
             raise ValueError("Set MAX_BOT_TOKEN in the backend .env")
         self.token = token.strip()
         self.messages = load_messages(messages_path)
+        self.api_url = api_url.rstrip("/")
+        self.bot_id = bot_id
+        self.username = username
         self.mini_app = None
         self.ssl_context = ssl.create_default_context()
         self.ssl_context.load_verify_locations(
             cafile=Path(__file__).parent / "certs" / "russian_trusted_root_ca.pem",
         )
 
+    @classmethod
+    def from_env(cls, token, env=None, strict=True):
+        """The client with the optional settings from bot_settings().
+
+        strict=False (the API): a malformed optional setting is logged and the defaults are used, so a
+        typo in .env does not take the whole site down. The bot itself starts strict and stops.
+        """
+        try:
+            settings = bot_settings(env)
+        except ValueError as error:
+            if strict:
+                raise
+            logger.warning("Ignoring an invalid bot setting in .env, using defaults: %s", error)
+            settings = {}
+        return cls(token, **settings)
+
     def request(self, method, path, *, params=None, body=None, timeout=10):
-        url = API_URL + path
+        url = self.api_url + path
         if params:
             url += "?" + urlencode(params)
         headers = {"Authorization": self.token, "Accept": "application/json"}
@@ -234,8 +295,12 @@ class MaxClient:
     def load_mini_app(self):
         """Identify this bot via GET /me so open_app buttons launch its own mini app."""
         if self.mini_app is None:
-            bot = self.request("GET", "/me")
-            bot_id, username = bot.get("user_id"), bot.get("username")
+            if self.bot_id is not None and self.username:
+                bot_id, username = self.bot_id, self.username  # set in .env: no request needed
+            else:
+                bot = self.request("GET", "/me")
+                bot_id = self.bot_id or bot.get("user_id")
+                username = self.username or bot.get("username")
             if type(bot_id) is not int or bot_id <= 0:
                 raise MaxAPIError("MAX API returned invalid bot info")
             mini_app = {"contact_id": bot_id}
@@ -403,8 +468,19 @@ def main():
     stop = Event()
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, lambda *_: stop.set())
+    # BOT_ENABLED=false in .env turns the text bot off without touching the rest of the project.
+    # The container stays up and idle, so `docker compose up --wait` and restarts keep working.
+    if not env_flag("BOT_ENABLED", True):
+        logger.info("The text bot is turned off (BOT_ENABLED=false). Set BOT_ENABLED=true to start it.")
+        stop.wait()
+        return 0
+    if not os.getenv("MAX_BOT_TOKEN", "").strip():
+        logger.warning("The text bot is not started: MAX_BOT_TOKEN is empty. Set it in .env and run "
+                       "`docker compose up -d`.")
+        stop.wait()
+        return 0
     try:
-        run_bot(MaxClient(os.getenv("MAX_BOT_TOKEN", "")), stop, on_start=record_start)
+        run_bot(MaxClient.from_env(os.getenv("MAX_BOT_TOKEN", "")), stop, on_start=record_start)
     except (ValueError, MaxAPIError) as error:
         logger.error("%s", error)
         return 1

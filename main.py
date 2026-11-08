@@ -29,7 +29,7 @@ from controller import (
     test_landing_page, validate_answer,
 )
 from auth import InvalidInitData, new_session_token, parse_user_ids, session_token_hash, validate_init_data
-from max_bot import START_PARAM_RE, MaxAPIError, MaxClient, test_share_text
+from max_bot import START_PARAM_RE, MaxAPIError, MaxClient, bot_settings, test_share_text
 
 
 MAX_PATH_ATTEMPTS = 5
@@ -54,6 +54,12 @@ app.config.update(
     # Public origin of the site, e.g. https://example.com: share links become <PUBLIC_URL>/test/<code>.
     PUBLIC_URL=os.getenv("PUBLIC_URL", "").strip().rstrip("/"),
 )
+# Optional MAX bot settings (MAX_BOT_USERNAME, MAX_BOT_ID, MAX_API_URL): a typo is reported once at
+# start and the defaults are used; the site must not go down because of it.
+try:
+    bot_settings()
+except ValueError as error:
+    app.logger.warning("Invalid bot setting in .env, using defaults: %s", error)
 if app.config["DEV_MODE"]:
     app.logger.warning(DEV_MODE_WARNING + " (DEV_MODE environment variable)")
 if app.config["MAX_INIT_DATA_MAX_AGE"] <= 0 or app.config["AUTH_SESSION_TTL"] <= 0:
@@ -88,7 +94,7 @@ def max_client() -> MaxClient:
     """Bot API client for sending messages; created on first use and reused per worker."""
     global _max_client
     if _max_client is None:
-        _max_client = MaxClient(app.config["MAX_BOT_TOKEN"])
+        _max_client = MaxClient.from_env(app.config["MAX_BOT_TOKEN"], strict=False)
     return _max_client
 
 

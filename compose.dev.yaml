@@ -88,6 +88,22 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # Optional: the frontend built and served by nginx like in production, but able to sign in
+  # without MAX (VITE_DEV_LOGIN) to this DEV_MODE backend. Start with --profile web.
+  web:
+    profiles: ["web"]
+    build:
+      context: ${FRONTEND_DIR:-../max-test-mini-app-front}
+      args:
+        VITE_DEV_LOGIN: "true"
+    image: max-test-mini-app-web:dev
+    ports:
+      - "127.0.0.1:${DEV_WEB_PORT:-8080}:80"
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   postgres_dev_data:
   s3_dev_data:

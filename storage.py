@@ -32,8 +32,17 @@ class InvalidImage(ValueError):
 
 
 def configured() -> bool:
-    return bool(os.getenv("S3_ENDPOINT") and os.getenv("S3_ACCESS_KEY") and os.getenv("S3_SECRET_KEY")
-                and os.getenv("IMAGE_SIGNING_KEY"))
+    return bool(os.getenv("S3_ENDPOINT") and os.getenv("S3_ACCESS_KEY") and os.getenv("S3_SECRET_KEY"))
+
+
+def signing_key() -> bytes:
+    """IMAGE_SIGNING_KEY, or a key derived from the bot token (a secret the operator already has),
+    or from the S3 secret: stable across restarts and the same in every worker."""
+    explicit = os.getenv("IMAGE_SIGNING_KEY", "").strip()
+    if explicit:
+        return explicit.encode()
+    secret = os.getenv("MAX_BOT_TOKEN", "").strip() or os.getenv("S3_SECRET_KEY", "")
+    return hmac.new(secret.encode(), b"max-tests:image-link-signing", hashlib.sha256).digest()
 
 
 def bucket() -> str:
@@ -61,21 +70,31 @@ def client():
     return _client
 
 
-def ensure_bucket(attempts: int = 30, delay: float = 2.0) -> None:
-    """Create the bucket if needed; waits for the storage to come up (db-init runs once at start)."""
+def ensure_bucket(attempts: int = 45, delay: float = 2.0) -> None:
+    """Create the bucket if needed; waits for the storage to come up (db-init runs once at start).
+
+    Right after the first start the storage can report healthy while it is still setting itself up,
+    so any storage error, also on create_bucket, is retried instead of failing the whole start.
+    """
     from botocore.exceptions import BotoCoreError, ClientError
 
     last = None
     for _ in range(attempts):
         try:
-            client().head_bucket(Bucket=bucket())
-            return
-        except ClientError as error:
-            if error.response.get("Error", {}).get("Code") in ("404", "NoSuchBucket", "NotFound"):
-                client().create_bucket(Bucket=bucket())
+            try:
+                client().head_bucket(Bucket=bucket())
                 return
-            last = error
-        except BotoCoreError as error:
+            except ClientError as error:
+                if error.response.get("Error", {}).get("Code") not in ("404", "NoSuchBucket", "NotFound"):
+                    raise
+            try:
+                client().create_bucket(Bucket=bucket())
+            except ClientError as error:
+                # Created by a parallel start in the meantime: that is fine.
+                if error.response.get("Error", {}).get("Code") not in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
+                    raise
+            return
+        except (BotoCoreError, ClientError) as error:
             last = error
         time.sleep(delay)
     raise RuntimeError(f"S3 storage is not available: {last}")
@@ -126,7 +145,7 @@ def prepare_image(raw: bytes) -> tuple[bytes, int, int]:
 
 
 def _signature(image_id: str, expires: int) -> str:
-    key = os.environ["IMAGE_SIGNING_KEY"].encode()
+    key = signing_key()
     digest = hmac.new(key, f"{image_id}:{expires}".encode(), hashlib.sha256).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
 
