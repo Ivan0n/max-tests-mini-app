@@ -1,0 +1,107 @@
+name: max-test-mini-app
+
+x-backend-env: &backend-env
+  DB_IP: db
+  DB_PORT: "5432"
+  DB_NAME: ${DB_NAME:-max_tests}
+  DB_LOGIN: ${DB_LOGIN:-max_tests}
+  DB_PASS: ${DB_PASS:?Set DB_PASS in .env}
+  MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
+  MAX_INIT_DATA_MAX_AGE: ${MAX_INIT_DATA_MAX_AGE:-3600}
+  AUTH_SESSION_TTL: ${AUTH_SESSION_TTL:-86400}
+  BETA_USER_IDS: ${BETA_USER_IDS:-}
+  PUBLIC_URL: ${PUBLIC_URL:-}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173}
+  # Task images in the s3 service below. IMAGE_SIGNING_KEY signs the image links handed to browsers.
+  S3_ENDPOINT: http://s3:8333
+  S3_BUCKET: ${S3_BUCKET:-test-images}
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in .env}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env}
+  IMAGE_SIGNING_KEY: ${IMAGE_SIGNING_KEY:?Set IMAGE_SIGNING_KEY in .env}
+
+x-backend: &backend
+  image: ${BACKEND_IMAGE:-ivan0n/max-test-mini-app-backend:latest}
+  build:
+    context: .
+  environment: *backend-env
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-max_tests}
+      POSTGRES_USER: ${DB_LOGIN:-max_tests}
+      POSTGRES_PASSWORD: ${DB_PASS:?Set DB_PASS in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  # S3-compatible storage for task images (SeaweedFS: MinIO stopped shipping images in 2025).
+  # Reachable only inside the Compose network; the backend serves the pictures itself.
+  s3:
+    image: chrislusf/seaweedfs:4.48
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        umask 077
+        printf '{"identities":[{"name":"backend","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","List","Tagging","Write"]}]}' "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" > /tmp/s3.json
+        exec weed server -dir=/data -s3 -s3.port=8333 -s3.config=/tmp/s3.json -master.volumeSizeLimitMB=1024 -volume.max=0
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in .env}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env}
+    volumes:
+      - s3_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+    restart: unless-stopped
+
+  db-init:
+    <<: *backend
+    command: ["python", "init_db.py"]
+    depends_on:
+      db:
+        condition: service_healthy
+      s3:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    <<: *backend
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/status', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  bot:
+    <<: *backend
+    profiles: ["bot"]
+    command: ["python", "max_bot.py"]
+    environment:
+      <<: *backend-env
+    stop_grace_period: 45s
+    restart: "on-failure:3"
+
+volumes:
+  postgres_data:
+  s3_data:

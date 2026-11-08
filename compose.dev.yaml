@@ -1,0 +1,93 @@
+name: max-test-mini-app-dev
+
+x-backend: &backend
+  build:
+    context: .
+  image: max-test-mini-app-backend:dev
+  environment:
+    DB_IP: db
+    DB_PORT: "5432"
+    DB_NAME: max_tests_dev
+    DB_LOGIN: max_tests_dev
+    DB_PASS: dev-only-password
+    DEV_MODE: "1"
+    MAX_BOT_TOKEN: ""
+    
+    S3_ENDPOINT: http://s3:8333
+    S3_BUCKET: test-images
+    S3_ACCESS_KEY: dev-access-key
+    S3_SECRET_KEY: dev-secret-key
+    IMAGE_SIGNING_KEY: dev-only-image-signing-key
+    CORS_ORIGINS: ${DEV_CORS_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:4173,http://localhost:4173,http://127.0.0.1:3000,http://localhost:3000}
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: max_tests_dev
+      POSTGRES_USER: max_tests_dev
+      POSTGRES_PASSWORD: dev-only-password
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U max_tests_dev -d max_tests_dev"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  # S3-compatible storage for task images (SeaweedFS: MinIO stopped shipping images in 2025).
+  # Reachable only inside the Compose network; the backend serves the pictures itself.
+  s3:
+    image: chrislusf/seaweedfs:4.48
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        umask 077
+        printf '{"identities":[{"name":"backend","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","List","Tagging","Write"]}]}' "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" > /tmp/s3.json
+        exec weed server -dir=/data -s3 -s3.port=8333 -s3.config=/tmp/s3.json -master.volumeSizeLimitMB=1024 -volume.max=0
+    environment:
+      S3_ACCESS_KEY: dev-access-key
+      S3_SECRET_KEY: dev-secret-key
+    volumes:
+      - s3_dev_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+    restart: unless-stopped
+
+  db-init:
+    <<: *backend
+    command: ["python", "init_db.py"]
+    depends_on:
+      db:
+        condition: service_healthy
+      s3:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    <<: *backend
+    ports:
+      - "127.0.0.1:${DEV_APP_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/status', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  postgres_dev_data:
+  s3_dev_data:

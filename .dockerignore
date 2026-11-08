@@ -1,0 +1,17 @@
+*
+!Dockerfile
+!requirements.txt
+!main.py
+!controller.py
+!models.py
+!sqlconnector.py
+!database.py
+!init_db.py
+!auth.py
+!max_bot.py
+!storage.py
+!messages.json
+!sql_requests/
+!sql_requests/*.sql
+!certs/
+!certs/*.pem
