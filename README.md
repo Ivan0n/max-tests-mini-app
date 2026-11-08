@@ -1,0 +1,1 @@
+# max-tests-mini-app
