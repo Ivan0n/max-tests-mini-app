@@ -6,16 +6,68 @@
 - README с инструкцией по запуску
 
 Командой для разработки backend был использован другой репозиторий, где с docker работали собирая образ у себя на машине: https://github.com/Ivan0n/max-test-mini-app-backend
+Репозиторий для фронтенда: https://github.com/Ivan0n/max-test-mini-app-front
 
-Само мини-приложение запущено, работает, подключено к MAX, хостинг должен продержаться всё время проверки этапа.
+Само мини-приложение **запущено, работает, подключено к MAX**, хостинг должен продержаться всё время проверки этапа.
 
-### Инструкция по самостоятельному запуску
+## Инструкция по самостоятельному запуску
 
-Загрузите образ в Docker:
+### 1. Установи и запусти Docker
+
+Установи Docker для своей системы:
+
+- [Windows](https://docs.docker.com/desktop/setup/install/windows-install/).
+- [macOS](https://docs.docker.com/desktop/setup/install/mac-install/).
+- [Linux: Docker Engine](https://docs.docker.com/engine/install/) и плагин Docker Compose.
+
+На Windows и macOS открой **Docker Desktop** и дождись запуска движка.
+Приложение должно работать, пока ты пользуешься бэкендом. Если установщик
+попросит включить WSL 2 или перезагрузить Windows, выполни это.
+На Linux должен работать Docker Engine.
+
+Открой терминал и проверь:
+
 ```sh
-docker load -i max-test-mini-app-backend.tar
+docker --version
+docker compose version
 ```
-Запустите образ:
+
+Обе команды должны вывести номер версии. Нужен Docker Compose v2 или новее.
+
+### 2. Скачай бэкенд
+
 ```sh
-docker run -p 8000:8000 max-test-mini-app-backend
+git clone https://github.com/Ivan0n/max-tests-mini-app
+cd max-tests-mini-app
 ```
+
+Если проект уже есть, открой **его папку** в VS Code (**Terminal → New Terminal**)
+и обнови его: `git pull`. Все команды ниже выполняй в папке бэкенда.
+
+### 3. Запусти бэкенд
+
+```sh
+docker compose -f compose.dev.yaml up -d --build --wait
+```
+
+Первый запуск занимает пару минут: Docker собирает образ. Когда команда
+завершится, терминал можно закрыть; Docker Desktop оставь запущенным.
+
+### 4. Проверь
+
+Открой **http://127.0.0.1:8000/api/status**. Должен появиться JSON
+`{"message": "Flask server is running", "status": "ok"}`.
+По адресу `http://127.0.0.1:8000/` страницы нет: `404` там ожидаемый.
+
+### 5. Запусти фронтенд
+
+В папке `max-test-mini-app-front`:
+
+```sh
+npm install
+npm run dev
+```
+
+Открой **http://127.0.0.1:5173/**: вход выполнится автоматически под «Разработчиком».
+Фронт в `npm run dev` сам обращается к `http://127.0.0.1:8000` и подставляет тестовый
+`init_data`, настраивать ничего не нужно.
