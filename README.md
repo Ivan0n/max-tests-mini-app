@@ -18,7 +18,7 @@
 
 - [Windows](https://docs.docker.com/desktop/setup/install/windows-install/).
 - [macOS](https://docs.docker.com/desktop/setup/install/mac-install/).
-- [Linux: Docker Engine](https://docs.docker.com/engine/install/) и плагин Docker Compose.
+- [Linux: Docker Engine](https://docs.docker.com/engine/install/) и плагин [Docker Compose](https://docs.docker.com/compose/install/linux/).
 
 На Windows и macOS открой **Docker Desktop** и дождись запуска движка.
 Приложение должно работать, пока ты пользуешься бэкендом. Если установщик
@@ -47,26 +47,41 @@ cd max-tests-mini-app
 ### 3. Запусти бэкенд
 
 ```sh
-docker compose -f compose.dev.yaml up -d --build --wait
+docker compose up -d --wait
 ```
 
 Первый запуск занимает пару минут: Docker собирает образ. Когда команда
 завершится, терминал можно закрыть; Docker Desktop оставь запущенным.
 
-### 4. Проверь
+### 4. env
+
+В корневой директории продублируй файл .env.example и убери из него .example, чтобы осталось .env
+
+**В нём находится несколько переменных:**
+> MAX_BOT_TOKEN= токен
+
+В MAX_BOT_TOKEN должен быть подставлен токен от бота. (business.max.ru -> Чат-боты -> бот -> Интеграция)
+> BOT_ENABLED= (true/false)
+
+BOT_ENABLED отвечает за текстового бота. Пока бот включен на сервере *(он должен быть сейчас включен)*, оставьте **false**, так как два включенных бота с одним токеном будут перехватывать сообщения друг у друга.
+> DEV_MODE= (true/false)
+
+Переменная DEV_MODE включает режим разработчика, отключает проверку токена и init data.
+> WEB_DEV_LOGIN= (true/false)
+
+WEB_DEV_LOGIN Пропускает авторизацию init data.
+
+> WEB_PORT=127.0.0.1:8080
+
+Адрес сайта на этом компьютере.
+
+Остальное (база данных, хранилище картинок, ключи) имеет значения по умолчанию и не нужно.
+
+### 5. Проверь
 
 Открой **http://127.0.0.1:8000/api/status**. Должен появиться JSON
 `{"message": "Flask server is running", "status": "ok"}`.
 По адресу `http://127.0.0.1:8000/` страницы нет: `404` там ожидаемый.
-
-### 5. Запусти фронтенд
-
-В папке `max-test-mini-app-front`:
-
-```sh
-npm install
-npm run dev
-```
 
 Открой **http://127.0.0.1:5173/**: вход выполнится автоматически под «Разработчиком».
 Фронт в `npm run dev` сам обращается к `http://127.0.0.1:8000` и подставляет тестовый
